@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <linux/bpf.h>
 #include <linux/bpf_common.h>
+#include <linux/btf.h>
 #include <linux/if_packet.h>
 #include <linux/perf_event.h>
 #include <linux/pkt_cls.h>
@@ -34,6 +35,7 @@
 #include <net/ethernet.h>
 #include <net/if.h>
 #include <sched.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +54,7 @@
 #include "setns.h"
 
 #include "libbpf/src/bpf.h"
+#include "libbpf/src/btf.h"
 
 // TODO: remove these defines when linux-libc-dev exports them properly
 
@@ -488,6 +491,167 @@ int bcc_prog_load(enum bpf_prog_type prog_type, const char *name,
       }
     }
   }
+
+  if (name_len) {
+    if (strncmp(name, "kprobe__", 8) == 0)
+      name_offset = 8;
+    else if (strncmp(name, "tracepoint__", 12) == 0)
+      name_offset = 12;
+    else if (strncmp(name, "raw_tracepoint__", 16) == 0)
+      name_offset = 16;
+    memcpy(attr.prog_name, name + name_offset,
+           min(name_len - name_offset, BPF_OBJ_NAME_LEN - 1));
+  }
+
+  ret = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+  // BPF object name is not supported on older Kernels.
+  // If we failed due to this, clear the name and try again.
+  if (ret < 0 && name_len && (errno == E2BIG || errno == EINVAL)) {
+    memset(attr.prog_name, 0, BPF_OBJ_NAME_LEN);
+    ret = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+  }
+
+  if (ret < 0 && errno == EPERM) {
+    // When EPERM is returned, two reasons are possible:
+    //  1. user has no permissions for bpf()
+    //  2. user has insufficent rlimit for locked memory
+    // Unfortunately, there is no api to inspect the current usage of locked
+    // mem for the user, so an accurate calculation of how much memory to lock
+    // for this new program is difficult to calculate. As a hack, bump the limit
+    // to unlimited. If program load fails again, return the error.
+    struct rlimit rl = {};
+    if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0) {
+      rl.rlim_max = RLIM_INFINITY;
+      rl.rlim_cur = rl.rlim_max;
+      if (setrlimit(RLIMIT_MEMLOCK, &rl) == 0)
+        ret = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+    }
+  }
+
+  // The load has failed. Handle log message.
+  if (ret < 0) {
+    // User has provided a log buffer.
+    if (log_buf_size) {
+      // If logging is not already enabled, enable it and do the syscall again.
+      if (attr.log_level == 0) {
+        attr.log_level = 1;
+        attr.log_buf = ptr_to_u64(log_buf);
+        attr.log_size = log_buf_size;
+        ret = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+      }
+      // Print the log message and return.
+      bpf_print_hints(ret, log_buf);
+      if (errno == ENOSPC)
+        fprintf(stderr, "bpf: log_buf size may be insufficient\n");
+      goto return_result;
+    }
+
+    // User did not provide log buffer. We will try to increase size of
+    // our temporary log buffer to get full error message.
+    if (tmp_log_buf)
+      free(tmp_log_buf);
+    tmp_log_buf_size = LOG_BUF_SIZE;
+    if (attr.log_level == 0)
+      attr.log_level = 1;
+    for (;;) {
+      tmp_log_buf = malloc(tmp_log_buf_size);
+      if (!tmp_log_buf) {
+        fprintf(stderr, "bpf: Failed to allocate temporary log buffer: %s\n\n",
+                strerror(errno));
+        goto return_result;
+      }
+      tmp_log_buf[0] = 0;
+      attr.log_buf = ptr_to_u64(tmp_log_buf);
+      attr.log_size = tmp_log_buf_size;
+
+      ret = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
+      if (ret < 0 && errno == ENOSPC) {
+        // Temporary buffer size is not enough. Double it and try again.
+        free(tmp_log_buf);
+        tmp_log_buf = NULL;
+        tmp_log_buf_size <<= 1;
+      } else {
+        break;
+      }
+    }
+  }
+
+  // Check if we should print the log message if log_level is not 0,
+  // either specified by user or set due to error.
+  if (attr.log_level > 0) {
+    // Don't print if user enabled logging and provided log buffer,
+    // but there is no error.
+    if (log_buf && ret < 0)
+      bpf_print_hints(ret, log_buf);
+    else if (tmp_log_buf)
+      bpf_print_hints(ret, tmp_log_buf);
+  }
+
+return_result:
+  if (tmp_log_buf)
+    free(tmp_log_buf);
+  return ret;
+}
+
+int bcc_prog_load_btf(enum bpf_prog_type prog_type, const char *name,
+                  const struct bpf_insn *insns, int prog_len,
+                  const char *license, unsigned kern_version,
+                  int log_level, char *log_buf, unsigned log_buf_size,
+                  int btf_fd, void *func_info, unsigned func_info_cnt, unsigned finfo_rec_size,
+                  void *line_info, unsigned line_info_cnt, unsigned linfo_rec_size)
+{
+  size_t name_len = name ? strlen(name) : 0;
+  union bpf_attr attr;
+  char *tmp_log_buf = NULL;
+  unsigned tmp_log_buf_size = 0;
+  int ret = 0, name_offset = 0;
+
+  memset(&attr, 0, sizeof(attr));
+
+  attr.prog_type = prog_type;
+  attr.kern_version = kern_version;
+  attr.license = ptr_to_u64((void *)license);
+
+  attr.insns = ptr_to_u64((void *)insns);
+  attr.insn_cnt = prog_len / sizeof(struct bpf_insn);
+  if (attr.insn_cnt > BPF_MAXINSNS) {
+    errno = EINVAL;
+    fprintf(stderr,
+            "bpf: %s. Program %s too large (%u insns), at most %d insns\n\n",
+            strerror(errno), name, attr.insn_cnt, BPF_MAXINSNS);
+    return -1;
+  }
+
+  attr.log_level = log_level;
+  if (attr.log_level > 0) {
+    if (log_buf_size > 0) {
+      // Use user-provided log buffer if availiable.
+      log_buf[0] = 0;
+      attr.log_buf = ptr_to_u64(log_buf);
+      attr.log_size = log_buf_size;
+    } else {
+      // Create and use temporary log buffer if user didn't provide one.
+      tmp_log_buf_size = LOG_BUF_SIZE;
+      tmp_log_buf = malloc(tmp_log_buf_size);
+      if (!tmp_log_buf) {
+        fprintf(stderr, "bpf: Failed to allocate temporary log buffer: %s\n\n",
+                strerror(errno));
+        attr.log_level = 0;
+      } else {
+        tmp_log_buf[0] = 0;
+        attr.log_buf = ptr_to_u64(tmp_log_buf);
+        attr.log_size = tmp_log_buf_size;
+      }
+    }
+  }
+
+  attr.prog_btf_fd = btf_fd;
+  attr.func_info = ptr_to_u64(func_info);
+  attr.func_info_cnt = func_info_cnt;
+  attr.func_info_rec_size = finfo_rec_size;
+  attr.line_info = ptr_to_u64(line_info);
+  attr.line_info_cnt = line_info_cnt;
+  attr.line_info_rec_size = linfo_rec_size;
 
   if (name_len) {
     if (strncmp(name, "kprobe__", 8) == 0)
@@ -1275,4 +1439,56 @@ int bpf_close_perf_event_fd(int fd) {
     }
   }
   return error;
+}
+
+__attribute__ ((format (printf, 1, 2)))
+static int __btf_debug_print(const char *format, ...) {
+  va_list args;
+  int err;
+
+  va_start(args, format);
+  err = vfprintf(stderr, format, args);
+  va_end(args);
+  return err;
+}
+
+bool bcc_load_btf(unsigned char *data, unsigned size,
+                 unsigned char *edata, unsigned esize,
+                 struct btf **btf, struct btf_ext **btf_ext) {
+  *btf = btf__new(data, size, __btf_debug_print);
+  *btf_ext = btf_ext__new(edata, esize, __btf_debug_print);
+  return !!*btf && !!*btf_ext;
+}
+
+int bcc_get_btf_info(struct btf *btf, struct btf_ext *btf_ext,
+                     const char *fname, int *btf_fd,
+                     void **func_info, unsigned *func_info_cnt, unsigned *finfo_rec_size,
+                     void **line_info, unsigned *line_info_cnt, unsigned *linfo_rec_size)
+{
+  int ret;
+
+  *func_info = *line_info = NULL;
+  *func_info_cnt = *line_info_cnt = NULL;
+
+  *btf_fd = btf__fd(btf);
+  *finfo_rec_size = btf_ext__func_info_rec_size(btf_ext);
+  *linfo_rec_size = btf_ext__line_info_rec_size(btf_ext);
+
+  ret = btf_ext__reloc_func_info(btf, btf_ext, fname, 0,
+        func_info, func_info_cnt);
+  if (ret) {
+    fprintf(stderr, "reloc func_info not successful\n");
+    return -1;
+  } else
+    fprintf(stderr, "reloc func_info successful\n");
+
+  ret = btf_ext__reloc_line_info(btf, btf_ext, fname, 0,
+        line_info, line_info_cnt);
+  if (ret) {
+    fprintf(stderr, "reloc line_info not successful\n");
+    return -1;
+  } else
+    fprintf(stderr, "reloc line_info successful\n");
+
+  return 0;
 }

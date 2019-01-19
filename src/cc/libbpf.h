@@ -19,6 +19,7 @@
 #define LIBBPF_H
 
 #include "linux/bpf.h"
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -60,6 +61,12 @@ int bcc_prog_load(enum bpf_prog_type prog_type, const char *name,
                   const struct bpf_insn *insns, int insn_len,
                   const char *license, unsigned kern_version,
                   int log_level, char *log_buf, unsigned log_buf_size);
+int bcc_prog_load_btf(enum bpf_prog_type prog_type, const char *name,
+                  const struct bpf_insn *insns, int insn_len,
+                  const char *license, unsigned kern_version,
+                  int log_level, char *log_buf, unsigned log_buf_size,
+                  int btf_fd, void *func_info, unsigned func_info_cnt, unsigned finfo_rec_size,
+                  void *line_info, unsigned line_info_cnt, unsigned linfo_rec_size);
 
 int bpf_attach_socket(int sockfd, int progfd);
 
@@ -115,6 +122,16 @@ int bpf_prog_get_tag(int fd, unsigned long long *tag);
 int bpf_prog_get_next_id(uint32_t start_id, uint32_t *next_id);
 int bpf_prog_get_fd_by_id(uint32_t id);
 int bpf_map_get_fd_by_id(uint32_t id);
+
+struct btf;
+struct btf_ext;
+bool bcc_load_btf(unsigned char *data, unsigned size,
+                 unsigned char *edata, unsigned esize,
+                 struct btf **btf, struct btf_ext **btf_ext);
+int bcc_get_btf_info(struct btf *btf, struct btf_ext *btf_ext,
+                     const char *fname, int *btf_fd,
+                     void **func_info, unsigned *func_info_cnt, unsigned *finfo_rec_size,
+                     void **line_info, unsigned *line_info_cnt, unsigned *linfo_rec_size);
 
 #define LOG_BUF_SIZE 65536
 

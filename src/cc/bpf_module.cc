@@ -42,6 +42,7 @@
 #include "bpf_module.h"
 #include "exported_files.h"
 #include "libbpf.h"
+#include "btf.h"
 
 namespace ebpf {
 
@@ -95,7 +96,7 @@ BPFModule::BPFModule(unsigned flags, TableStorage *ts, bool rw_engine_enabled,
       ctx_(new LLVMContext),
       id_(std::to_string((uintptr_t)this)),
       maps_ns_(maps_ns),
-      ts_(ts) {
+      ts_(ts), btf_(nullptr) {
   initialize_rw_engine();
   LLVMInitializeBPFTarget();
   LLVMInitializeBPFTargetMC();
@@ -138,6 +139,9 @@ BPFModule::~BPFModule() {
   cleanup_rw_engine();
   ctx_.reset();
   func_src_.reset();
+
+  if (btf_ != nullptr)
+    delete btf_;
 
   ts_->DeletePrefix(Path({id_}));
 }
@@ -214,6 +218,57 @@ int BPFModule::run_pass_manager(Module &mod) {
   return 0;
 }
 
+// Mainly do two things:
+// 1. Rewrite all LD_PSEUDO instructions.
+// 2. For any line info with missing lines due to remapped files,
+//    change .BTF and .BTF.ext to correct these line infos with
+//    correct lines.
+void BPFModule::postprocess_btf(const std::string &mod_fname) {
+  uint8_t *btf_sec = nullptr, *btf_ext_sec = nullptr;
+  uintptr_t btf_sec_size, btf_ext_sec_size;
+
+  for (auto section: sections_) {
+    auto sname = section.first;
+    uint8_t *addr = get<0>(section.second);
+    uintptr_t size = get<1>(section.second);
+
+    if (strcmp(".BTF", sname.c_str()) == 0) {
+      btf_sec = addr;
+      btf_sec_size = size;
+    }
+
+    if (strcmp(".BTF.ext", sname.c_str()) == 0) {
+      btf_ext_sec = addr;
+      btf_ext_sec_size = size;
+    }
+  }
+
+  if (btf_sec == nullptr || btf_ext_sec == nullptr)
+    return;
+
+  auto helpers_h = ExportedFiles::headers().find("/virtual/include/bcc/helpers.h");
+  if (helpers_h == ExportedFiles::headers().end()) {
+    fprintf(stderr, "Internal error: missing bcc/helpers.h");
+    return;
+  }
+  std::map<std::string, std::string> remapped_sources;
+  remapped_sources[mod_fname] = mod_src_;
+  remapped_sources["/virtual/include/bcc/helpers.h"] = helpers_h->second;
+
+  btf_ = new BTF(btf_sec, btf_sec_size, btf_ext_sec, btf_ext_sec_size,
+                 remapped_sources);
+  btf_->adjust();
+
+  int ret = btf_->load();
+  if (ret) {
+    fprintf(stderr, "BTF load failed\n");
+    delete btf_;
+    btf_ = nullptr;
+    return;
+  }
+  fprintf(stderr, "BTF load succeeded\n");
+}
+
 int BPFModule::finalize() {
   Module *mod = &*mod_;
   std::map<std::string, std::tuple<uint8_t *, uintptr_t>> tmp_sections,
@@ -256,6 +311,8 @@ int BPFModule::finalize() {
                                 src_dbg_fmap_);
     src_debugger.dump();
   }
+
+  postprocess_btf(mod->getSourceFileName());
 
   if (!rw_engine_enabled_) {
     // Setup sections_ correctly and then free llvm internal memory
@@ -647,6 +704,29 @@ int BPFModule::load_string(const string &text, const char *cflags[], int ncflags
   if (int rc = finalize())
     return rc;
   return 0;
+}
+
+int BPFModule::bcc_func_load(int prog_type, const char *name, 
+                const struct bpf_insn *insns, int prog_len,
+                const char *license, unsigned kern_version,
+                int log_level, char *log_buf, unsigned log_buf_size) {
+  int ret, btf_fd;
+  unsigned func_info_cnt, line_info_cnt, finfo_rec_size, linfo_rec_size;
+  void *func_info, *line_info;
+  char secname[256];
+
+  ::snprintf(secname, sizeof(secname), ".bpf.fn.%s", name);
+  ret = btf_->get_btf_info(secname, &btf_fd, &func_info, &func_info_cnt, &finfo_rec_size,
+                           &line_info, &line_info_cnt, &linfo_rec_size);
+
+  if (ret)
+    return bcc_prog_load((enum bpf_prog_type)prog_type, name, insns, prog_len, license,
+                         kern_version, log_level, log_buf, log_buf_size);
+  else
+    return bcc_prog_load_btf((enum bpf_prog_type)prog_type, name, insns, prog_len, license,
+                         kern_version, log_level, log_buf, log_buf_size,
+                         btf_fd, func_info, func_info_cnt, finfo_rec_size,
+                         line_info, line_info_cnt, linfo_rec_size);
 }
 
 } // namespace ebpf
