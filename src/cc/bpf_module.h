@@ -89,7 +89,10 @@ class BPFModule {
   StatusTuple sscanf(std::string fn_name, const char *str, void *val);
   StatusTuple snprintf(std::string fn_name, char *str, size_t sz,
                        const void *val);
-  void postprocess_btf(const std::string &mod_fname);
+  void postprocess_btf(const std::string &mod_fname,
+                       std::map<std::string, std::tuple<uint8_t *, uintptr_t>> &sections);
+  void load_btf(const std::string &mod_fname);
+  void load_maps(std::map<std::string, std::tuple<uint8_t *, uintptr_t>> &sections);
 
  public:
   BPFModule(unsigned flags, TableStorage *ts = nullptr, bool rw_engine_enabled = true,
@@ -166,6 +169,7 @@ class BPFModule {
   TableStorage *ts_;
   std::unique_ptr<TableStorage> local_ts_;
   BTF *btf_;
+  std::map<int, std::tuple<int, std::string, int, int, int, int>> fake_fd_maps_;
 };
 
 }  // namespace ebpf

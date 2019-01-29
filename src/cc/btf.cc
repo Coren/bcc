@@ -97,6 +97,10 @@ void BTF::adjust() {
   }
 }
 
+unsigned BTF::get_fd() {
+  return bcc_get_btf_fd(btf_);
+}
+
 int BTF::load() {
   struct btf *btf;
   struct btf_ext *btf_ext;
@@ -112,11 +116,18 @@ int BTF::load() {
 }
 
 int BTF::get_btf_info(const char *fname, int *btf_fd,
-                      void **func_info, unsigned *func_info_cnt, unsigned *finfo_rec_size,
-                      void **line_info, unsigned *line_info_cnt, unsigned *linfo_rec_size) {
+                      void **func_info, unsigned *func_info_cnt,
+                      unsigned *finfo_rec_size,
+                      void **line_info, unsigned *line_info_cnt,
+                      unsigned *linfo_rec_size) {
   return bcc_get_btf_info(btf_, btf_ext_, fname, btf_fd,
                           func_info, func_info_cnt, finfo_rec_size,
                           line_info, line_info_cnt, linfo_rec_size);
+}
+
+int BTF::get_map_tids(std::string struct_name, unsigned *key_tid,
+                      unsigned *value_tid) {
+  return bcc_get_map_tids(btf_, struct_name.c_str(), key_tid, value_tid);
 }
 
 } // namespace ebpf

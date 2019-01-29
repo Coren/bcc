@@ -228,6 +228,48 @@ int bcc_create_map(enum bpf_map_type map_type, const char *name,
   return ret;
 }
 
+int bcc_create_map_btf(enum bpf_map_type map_type, const char *name,
+                       int key_size, int value_size,
+                       int max_entries, int map_flags,
+                       unsigned btf_fd,
+                       unsigned key_tid, unsigned value_tid)
+{
+  struct bpf_create_map_attr create_attr = {};
+  size_t name_len = name ? strlen(name) : 0;
+  char map_name[BPF_OBJ_NAME_LEN] = {};
+
+  create_attr.map_type = map_type;
+  create_attr.key_size = key_size;
+  create_attr.value_size = value_size;
+  create_attr.max_entries = max_entries;
+  create_attr.map_flags = map_flags;
+  create_attr.btf_fd = btf_fd;
+  create_attr.btf_key_type_id = key_tid;
+  create_attr.btf_value_type_id = value_tid;
+  create_attr.name = map_name;
+  memcpy(map_name, name, min(name_len, BPF_OBJ_NAME_LEN - 1));
+  
+
+  int ret = bpf_create_map_xattr(&create_attr);
+  if (ret < 0 && name_len && (errno == E2BIG || errno == EINVAL)) {
+    map_name[0] = '\0';
+    ret = bpf_create_map_xattr(&create_attr);
+  }
+
+  if (ret < 0 && errno == EPERM) {
+    // see note below about the rationale for this retry
+
+    struct rlimit rl = {};
+    if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0) {
+      rl.rlim_max = RLIM_INFINITY;
+      rl.rlim_cur = rl.rlim_max;
+      if (setrlimit(RLIMIT_MEMLOCK, &rl) == 0)
+        ret = bpf_create_map_xattr(&create_attr);
+    }
+  }
+  return ret;
+}
+
 int bpf_update_elem(int fd, void *key, void *value, unsigned long long flags)
 {
   return bpf_map_update_elem(fd, key, value, flags);
@@ -1462,9 +1504,10 @@ bool bcc_load_btf(unsigned char *data, unsigned size,
 
 int bcc_get_btf_info(struct btf *btf, struct btf_ext *btf_ext,
                      const char *fname, int *btf_fd,
-                     void **func_info, unsigned *func_info_cnt, unsigned *finfo_rec_size,
-                     void **line_info, unsigned *line_info_cnt, unsigned *linfo_rec_size)
-{
+                     void **func_info, unsigned *func_info_cnt,
+                     unsigned *finfo_rec_size,
+                     void **line_info, unsigned *line_info_cnt,
+                     unsigned *linfo_rec_size) {
   int ret;
 
   *func_info = *line_info = NULL;
@@ -1490,5 +1533,37 @@ int bcc_get_btf_info(struct btf *btf, struct btf_ext *btf_ext,
   } else
     fprintf(stderr, "reloc line_info successful\n");
 
+  return 0;
+}
+
+unsigned bcc_get_btf_fd(struct btf *btf) {
+  return btf__fd(btf);
+}
+
+
+int bcc_get_map_tids(struct btf *btf, const char *struct_name, unsigned *key_tid,
+                     unsigned *value_tid)
+{
+  int struct_tid;
+  struct btf_type *struct_type;
+  struct btf_member *key, *value;
+
+  struct_tid = btf__find_by_name(btf, struct_name);
+  if (struct_tid < 0)
+    return -1;
+
+  struct_type = btf__type_by_id(btf, struct_tid);
+  if (!struct_type)
+    return -1;
+
+  if (BTF_INFO_KIND(struct_type->info) != BTF_KIND_STRUCT ||
+      BTF_INFO_VLEN(struct_type->info) < 2)
+    return -1;
+
+  key = (struct btf_member *)(struct_type + 1);
+  value = key + 1;
+
+  *key_tid = key->type;
+  *value_tid = value->type;
   return 0;
 }

@@ -29,8 +29,13 @@ class BTF {
   void adjust();
   int load();
   int get_btf_info(const char *fname, int *btf_fd,
-                   void **func_info, unsigned *func_info_cnt, unsigned *finfo_rec_size,
-                   void **line_info, unsigned *line_info_cnt, unsigned *linfo_rec_size);
+                   void **func_info, unsigned *func_info_cnt,
+                   unsigned *finfo_rec_size,
+                   void **line_info, unsigned *line_info_cnt,
+                   unsigned *linfo_rec_size);
+  int get_map_tids(std::string struct_name, unsigned *key_tid,
+                   unsigned *value_tid);
+  unsigned get_fd();
 
  private:
   uint8_t *btf_sec_;

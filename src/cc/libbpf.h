@@ -35,6 +35,9 @@ enum bpf_probe_attach_type {
 int bcc_create_map(enum bpf_map_type map_type, const char *name,
                    int key_size, int value_size, int max_entries,
                    int map_flags);
+int bcc_create_map_btf(enum bpf_map_type map_type, const char *name,
+                       int key_size, int value_size, int max_entries,
+                       int map_flags, unsigned btf_fd, unsigned key_tid, unsigned value_tid);
 int bpf_update_elem(int fd, void *key, void *value, unsigned long long flags);
 int bpf_lookup_elem(int fd, void *key, void *value);
 int bpf_delete_elem(int fd, void *key);
@@ -128,10 +131,13 @@ struct btf_ext;
 bool bcc_load_btf(unsigned char *data, unsigned size,
                  unsigned char *edata, unsigned esize,
                  struct btf **btf, struct btf_ext **btf_ext);
+unsigned bcc_get_btf_fd(struct btf *btf);
 int bcc_get_btf_info(struct btf *btf, struct btf_ext *btf_ext,
                      const char *fname, int *btf_fd,
                      void **func_info, unsigned *func_info_cnt, unsigned *finfo_rec_size,
                      void **line_info, unsigned *line_info_cnt, unsigned *linfo_rec_size);
+int bcc_get_map_tids(struct btf *btf, const char *struct_name, unsigned *key_tid,
+                     unsigned *value_tid);
 
 #define LOG_BUF_SIZE 65536
 
