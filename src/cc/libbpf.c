@@ -1541,29 +1541,11 @@ unsigned bcc_get_btf_fd(struct btf *btf) {
 }
 
 
-int bcc_get_map_tids(struct btf *btf, const char *struct_name, unsigned *key_tid,
-                     unsigned *value_tid)
+int bcc_get_map_tids(struct btf *btf, const char *map_name,
+		     unsigned expected_ksize, unsigned expected_vsize,
+		     unsigned *key_tid, unsigned *value_tid)
 {
-  int struct_tid;
-  struct btf_type *struct_type;
-  struct btf_member *key, *value;
-
-  struct_tid = btf__find_by_name(btf, struct_name);
-  if (struct_tid < 0)
-    return -1;
-
-  struct_type = btf__type_by_id(btf, struct_tid);
-  if (!struct_type)
-    return -1;
-
-  if (BTF_INFO_KIND(struct_type->info) != BTF_KIND_STRUCT ||
-      BTF_INFO_VLEN(struct_type->info) < 2)
-    return -1;
-
-  key = (struct btf_member *)(struct_type + 1);
-  value = key + 1;
-
-  *key_tid = key->type;
-  *value_tid = value->type;
-  return 0;
+  return bpf_find_map_kv_tids(btf, map_name,
+			      expected_ksize, expected_vsize,
+			      key_tid, value_tid);
 }

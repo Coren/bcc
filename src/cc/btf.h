@@ -33,8 +33,9 @@ class BTF {
                    unsigned *finfo_rec_size,
                    void **line_info, unsigned *line_info_cnt,
                    unsigned *linfo_rec_size);
-  int get_map_tids(std::string struct_name, unsigned *key_tid,
-                   unsigned *value_tid);
+  int get_map_tids(std::string map_name,
+		   unsigned expected_ksize, unsigned expected_vsize,
+		   unsigned *key_tid, unsigned *value_tid);
   unsigned get_fd();
 
  private:

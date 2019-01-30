@@ -35,6 +35,7 @@ void BTF::adjust() {
   for (auto it = remapped_src_.begin(); it != remapped_src_.end(); ++it) {
     size_t FileBufSize = it->second.size();
     std::vector<std::string> LineCache;
+    LineCache.push_back(std::string());
     for (uint32_t start = 0, end = start; end < FileBufSize; end++) {
       if (it->second[end] == '\n' || end == FileBufSize - 1 ||
           (it->second[end] == '\r' && it->second[end + 1] == '\n')) {
@@ -125,9 +126,11 @@ int BTF::get_btf_info(const char *fname, int *btf_fd,
                           line_info, line_info_cnt, linfo_rec_size);
 }
 
-int BTF::get_map_tids(std::string struct_name, unsigned *key_tid,
-                      unsigned *value_tid) {
-  return bcc_get_map_tids(btf_, struct_name.c_str(), key_tid, value_tid);
+int BTF::get_map_tids(std::string map_name,
+                      unsigned expected_ksize, unsigned expected_vsize,
+		      unsigned *key_tid, unsigned *value_tid) {
+  return bcc_get_map_tids(btf_, map_name.c_str(),
+			  expected_ksize, expected_vsize, key_tid, value_tid);
 }
 
 } // namespace ebpf

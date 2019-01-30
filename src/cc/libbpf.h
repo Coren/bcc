@@ -136,8 +136,9 @@ int bcc_get_btf_info(struct btf *btf, struct btf_ext *btf_ext,
                      const char *fname, int *btf_fd,
                      void **func_info, unsigned *func_info_cnt, unsigned *finfo_rec_size,
                      void **line_info, unsigned *line_info_cnt, unsigned *linfo_rec_size);
-int bcc_get_map_tids(struct btf *btf, const char *struct_name, unsigned *key_tid,
-                     unsigned *value_tid);
+int bcc_get_map_tids(struct btf *btf, const char *struct_name,
+                     unsigned expected_ksize, unsigned expected_vsize,
+		     unsigned *key_tid, unsigned *value_tid);
 
 #define LOG_BUF_SIZE 65536
 

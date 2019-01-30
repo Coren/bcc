@@ -284,10 +284,27 @@ fprintf(stderr, "find map tids\n");
     auto sec_name = section.first;
     if (strncmp(".maps.", sec_name.c_str(), 6) == 0) {
       std::string map_name = sec_name.substr(6);
-      std::string struct_name = std::string("____btf_map_") + map_name;
       unsigned key_tid = 0, value_tid = 0;
+      unsigned expected_ksize = 0, expected_vsize = 0;
 
-      int ret = btf_->get_map_tids(struct_name, &key_tid, &value_tid);
+      for (auto map : fake_fd_maps_) {
+        std::string name;
+
+        name = get<1>(map.second);
+        if (map_name == name) {
+          expected_ksize = get<2>(map.second);
+          expected_vsize = get<3>(map.second);
+          break;
+        }
+      }
+
+      if (expected_ksize == 0) {
+        fprintf(stderr, "did not find the expected ksize\n");
+        continue;
+      }
+
+      int ret = btf_->get_map_tids(map_name, expected_ksize,
+                  expected_vsize, &key_tid, &value_tid);
       if (ret) {
         fprintf(stderr, "did not get map tid for map %s\n", sec_name.c_str());
         continue;
